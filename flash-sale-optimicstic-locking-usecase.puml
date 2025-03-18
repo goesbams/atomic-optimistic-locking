@@ -1,0 +1,30 @@
+@startuml
+  actor User1
+  actor User2
+  participant "Application Server" as App
+  participant "Redis Cache" as Redis
+  participant "Database" as DB
+
+  User1 -> App: Request to purchase item
+  User2 -> App: Request to purchase item
+
+  App -> Redis: SETNX lock:product:123
+  alt User1 Acquires Lock
+      Redis --> App: Lock Acquired
+      App -> DB: SELECT stock, version FROM products WHERE id = 123
+      DB --> App: stock=10, version=5
+      App -> DB: UPDATE products SET stock=stock-1, version=version+1 WHERE id=123 AND version=5
+      alt Update Successful
+          DB --> App: OK (1 row affected)
+          App -> Redis: DEL lock:product:123
+          App -> User1: Purchase Success 🎉
+      else Update Failed (version mismatch)
+          DB --> App: 0 rows affected
+          App -> Redis: DEL lock:product:123
+          App -> User1: Retry or Fail 
+      end
+  else User2 Fails to Acquire Lock
+      Redis --> App: Lock exists
+      App -> User2: Retry Later 
+  end
+@enduml
