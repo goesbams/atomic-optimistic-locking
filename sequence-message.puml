@@ -1,0 +1,54 @@
+@startuml
+skinparam sequenceMessageAlign center
+
+actor User1 as "User A\n(Low Latency)"
+actor User2 as "User B\n(High Latency)"
+participant "App Server" as App
+box "Redis Internals"
+participant "TCP Receive Buffer" as Buffer
+participant "Event Loop\n(epoll/kqueue)" as EventLoop
+participant "Command Queue" as Queue
+participant "Command Processor\n(Single Thread)" as Processor
+end box
+participant "Database" as DB
+
+User1 -> App: POST /purchase/123
+User2 -> App: POST /purchase/123
+
+App -> Buffer: SETNX lock:123 (User A)
+App -> Buffer: SETNX lock:123 (User B)
+
+note right #ffaaaa
+**Network Timeline:**
+0ms: User A's packet leaves client
+0ms: User B's packet leaves client
+0.8ms: User A's packet arrives at Redis (low latency)
+1.2ms: User B's packet arrives at Redis (high latency)
+end note
+
+Buffer -> EventLoop: New data event
+EventLoop -> Queue: Add command A\n(SETNX lock:123)
+EventLoop -> Queue: Add command B\n(SETNX lock:123)
+
+Processor -> Queue: Fetch command A
+activate Processor
+Processor -> Processor: Execute SETNX lock:123
+Processor --> App: 1 (Lock acquired)
+deactivate Processor
+
+App -> DB: BEGIN TX\nSELECT stock, version...
+DB --> App: stock=1, version=42
+
+Processor -> Queue: Fetch command B
+activate Processor
+Processor -> Processor: Execute SETNX lock:123
+Processor --> App: 0 (Lock exists)
+deactivate Processor
+
+App -> User2: 409 Conflict\n"Item unavailable"
+
+App -> DB: UPDATE products SET stock=stock-1, version=version+1\nWHERE id=123 AND version=42
+DB --> App: 1 row affected
+App -> Processor: DEL lock:123
+App -> User1: 200 OK\n"Purchase successful"
+@enduml
