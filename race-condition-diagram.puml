@@ -1,0 +1,28 @@
+@startuml
+  actor User_A
+  actor User_B
+  participant "Application Server" as App
+  participant "Database" as DB
+
+  title Race Condition without Locking
+
+  User_A -> App: Request to buy item
+  User_B -> App: Request to buy item
+
+  App -> DB: SELECT stock FROM products WHERE id = 123
+  DB --> App: stock = 5
+
+  App -> DB: SELECT stock FROM products WHERE id = 123
+  DB --> App: stock = 5
+
+  App -> DB: UPDATE products SET stock = 4 WHERE id = 123
+  DB --> App: OK
+
+  App -> DB: UPDATE products SET stock = 4 WHERE id = 123
+  DB --> App: OK
+
+  App --> User_A: Purchase Success
+  App --> User_B: Purchase Success
+
+  note over DB: Wrong stock: 4 instead of 3!
+@enduml

@@ -1,30 +1,47 @@
 @startuml
-  actor User1
-  actor User2
-  participant "Application Server" as App
-  participant "Redis Cache" as Redis
-  participant "Database" as DB
+skinparam sequenceMessageAlign center
 
-  User1 -> App: Request to purchase item
-  User2 -> App: Request to purchase item
+actor User as "User A"
+participant "App Server" as App
+box "Redis" #LightBlue
+participant "Lock\n(SETNX/EX)" as Redis
+end box
+participant "Database" as DB
 
-  App -> Redis: SETNX lock:product:123
-  alt User1 Acquires Lock
-      Redis --> App: Lock Acquired
-      App -> DB: SELECT stock, version FROM products WHERE id = 123
-      DB --> App: stock=10, version=5
-      App -> DB: UPDATE products SET stock=stock-1, version=version+1 WHERE id=123 AND version=5
-      alt Update Successful
-          DB --> App: OK (1 row affected)
-          App -> Redis: DEL lock:product:123
-          App -> User1: Purchase Success 🎉
-      else Update Failed (version mismatch)
-          DB --> App: 0 rows affected
-          App -> Redis: DEL lock:product:123
-          App -> User1: Retry or Fail 
-      end
-  else User2 Fails to Acquire Lock
-      Redis --> App: Lock exists
-      App -> User2: Retry Later 
-  end
+User -> App: POST /purchase/123
+activate App
+
+App -> Redis: SET lock:123 <uuid> NX EX 30
+alt Lock Acquired
+    Redis --> App: OK
+    App -> DB: SELECT stock FROM products WHERE id=123
+    DB --> App: stock=1
+    
+    alt Stock > 0
+        App -> DB: UPDATE products\nSET stock=stock-1\nWHERE id=123 AND stock > 0
+        alt Update Success
+            DB --> App: 1 row affected
+            App -> Redis: EVAL "if redis.call('GET', KEYS[1]) == ARGV[1] then\nreturn redis.call('DEL', KEYS[1])\nelse\nreturn 0\nend" 1 lock:123 <uuid>
+            Redis --> App: 1
+            App -> User: 200 OK\nOrder confirmed
+        else Update Failed (stock <=0)
+            DB --> App: 0 rows affected
+            App -> Redis: DEL lock:123
+            App -> User: 409 Conflict\nOut of stock
+        end
+    else Stock <=0
+        App -> Redis: DEL lock:123
+        App -> User: 409 Conflict\nOut of stock
+    end
+    
+    loop Every 5s until completion
+        App -> Redis: EXPIRE lock:123 30
+    end
+    
+else Lock Not Acquired
+    Redis --> App: nil
+    App -> User: 429 Too Many Requests\nRetry after 30s
+end
+
+deactivate App
 @enduml
